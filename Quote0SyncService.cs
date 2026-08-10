@@ -22,7 +22,7 @@ public class Quote0SyncService : IHostedService
     private const string DotTaskAlias = "ClassIsland Schedule";
     // 广播排期分段轮播：每段最大像素宽度（适配单行）与轮播间隔。
     private const int VoiceHubMaxSegmentWidth = 270;
-    private static readonly TimeSpan VoiceHubRotateInterval = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan VoiceHubRotateInterval = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan DotDebounce = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan[] DotRetryDelays =
     [
@@ -795,8 +795,9 @@ public class Quote0SyncService : IHostedService
             courseTime = $"{current.Start:hh\\:mm} - {current.End:hh\\:mm}";
             var totalMinutes = (current.End - current.Start).TotalMinutes;
             var elapsedMinutes = (currentTime - current.Start).TotalMinutes;
+            // 进度按 10% 粒度取整，避免每分钟变化触发墨水屏刷新。
             progressPercent = totalMinutes > 0
-                ? Math.Clamp((int)Math.Round(elapsedMinutes / totalMinutes * 100), 0, 100)
+                ? Math.Clamp((int)Math.Round(elapsedMinutes / totalMinutes * 100), 0, 100) / 10 * 10
                 : 0;
             countdownStateKey = $"{payload.Date}:class:{currentIndex}:{current.Start}";
         }
@@ -884,7 +885,8 @@ public class Quote0SyncService : IHostedService
             DateLine = $"{now:M月d日} {GetChineseWeekday(now.DayOfWeek)}",
             Weather = weather,
             AlertText = alertText,
-            CurrentTime = now.ToString("HH:mm"),
+            // 时间按 5 分钟粒度取整显示（如 09:07 显示 09:05），避免每分钟变化触发墨水屏刷新。
+            CurrentTime = new DateTime(now.Year, now.Month, now.Day, now.Hour, now.Minute / 5 * 5, 0).ToString("HH:mm"),
             State = state,
             Title = TruncateText(title, 8),
             Remaining = remaining,
