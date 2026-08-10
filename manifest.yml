@@ -1,0 +1,9 @@
+id: laoshui.quote0-sync  # 插件 id
+name: Quote/0 课表同步  # 插件名称
+apiVersion: 2.0.0.0  # 插件 API 版本，即 ClassIsland 版本
+description: 将当前课表、天气和广播排期推送到 Quote/0 (Dot.) 墨水屏  # 插件描述
+entranceAssembly: "Quote0SyncPlugin.dll"  # 入口程序集
+url: https://github.com/laoshuikaixue/Quote0SyncPlugin  # 插件 Url
+author: LaoShui  # 插件作者
+version: 1.0.0.0  # 插件版本
+icon: icon.png
