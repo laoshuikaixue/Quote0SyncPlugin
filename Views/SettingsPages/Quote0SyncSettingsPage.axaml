@@ -1,0 +1,70 @@
+<ci:SettingsPageBase xmlns="https://github.com/avaloniaui"
+                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+                     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+                     xmlns:ci="http://classisland.tech/schemas/xaml/core"
+                     xmlns:controls="clr-namespace:FluentAvalonia.UI.Controls;assembly=FluentAvalonia"
+                     xmlns:models="clr-namespace:Quote0SyncPlugin.Models"
+                     xmlns:local="clr-namespace:Quote0SyncPlugin.Views.SettingsPages"
+                     mc:Ignorable="d"
+                     d:DesignWidth="800"
+                     d:DesignHeight="600"
+                     x:Class="Quote0SyncPlugin.Views.SettingsPages.Quote0SyncSettingsPage"
+                     x:DataType="models:Quote0SyncSettings"
+                     d:DataContext="{d:DesignInstance models:Quote0SyncSettings}">
+    <ScrollViewer>
+        <StackPanel Classes="settings-container animated-intro">
+            <ci:IconText Glyph="&#xE4A9;" Text="同步控制" Margin="0 0 0 8" />
+
+            <controls:SettingsExpander Header="Quote/0 Canvas 同步"
+                                       IconSource="{ci:FluentIconSource &#xE4A9;}"
+                                       IsExpanded="{Binding IsEnabled, Mode=OneWay}"
+                                       Description="将当前课表、天气和广播排期推送到 Quote/0 (Dot.) 墨水屏。课程状态变化时立即刷新；倒计时仅在 30、15、5、1 分钟节点刷新，以降低耗电和残影。">
+                <controls:SettingsExpander.Footer>
+                    <ToggleSwitch IsChecked="{Binding IsEnabled, Mode=TwoWay}" />
+                </controls:SettingsExpander.Footer>
+
+                <controls:SettingsExpanderItem Content="Dot API Key"
+                                               Description="在 Dot App 的“更多 → API Keys”中创建。密钥会明文保存在本机插件配置目录。">
+                    <controls:SettingsExpanderItem.Footer>
+                        <TextBox Width="320"
+                                 MaxWidth="320"
+                                 PasswordChar="●"
+                                 Watermark="dot_app_..."
+                                 Text="{Binding ApiKey, Mode=TwoWay}" />
+                    </controls:SettingsExpanderItem.Footer>
+                </controls:SettingsExpanderItem>
+
+                <controls:SettingsExpanderItem Content="设备 ID"
+                                               Description="填写 Dot 硬件设备序列号，不是 API Key。">
+                    <controls:SettingsExpanderItem.Footer>
+                        <TextBox Width="220"
+                                 MaxWidth="220"
+                                 Watermark="设备序列号"
+                                 Text="{Binding DeviceId, Mode=TwoWay}" />
+                    </controls:SettingsExpanderItem.Footer>
+                </controls:SettingsExpanderItem>
+
+                <controls:SettingsExpanderItem Content="Canvas Task Key（可选）"
+                                               Description="只有设备循环任务中存在多个 Canvas API 内容时才需要填写。">
+                    <controls:SettingsExpanderItem.Footer>
+                        <TextBox Width="220"
+                                 MaxWidth="220"
+                                 Watermark="通常留空"
+                                 Text="{Binding TaskKey, Mode=TwoWay}" />
+                    </controls:SettingsExpanderItem.Footer>
+                </controls:SettingsExpanderItem>
+
+                <controls:SettingsExpanderItem Content="准备设备"
+                                               Description="先在 Dot App 内容工作室中为目标设备的循环任务添加一个 Canvas API 内容。" />
+
+                <controls:SettingsExpanderItem Content="测试并推送当前课表">
+                    <controls:SettingsExpanderItem.Footer>
+                        <Button Content="测试"
+                                Click="TestButton_OnClick" />
+                    </controls:SettingsExpanderItem.Footer>
+                </controls:SettingsExpanderItem>
+            </controls:SettingsExpander>
+        </StackPanel>
+    </ScrollViewer>
+</ci:SettingsPageBase>
