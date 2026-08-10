@@ -5,6 +5,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using ClassIsland.Core.Abstractions.Services;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -19,6 +20,9 @@ public class Quote0SyncService : IHostedService
 {
     private const string DotBaseUrl = "https://dot.mindreset.tech";
     private const string DotTaskAlias = "ClassIsland Schedule";
+    // 广播排期分段轮播：每段最大像素宽度（适配单行）与轮播间隔。
+    private const int VoiceHubMaxSegmentWidth = 270;
+    private static readonly TimeSpan VoiceHubRotateInterval = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan DotDebounce = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan[] DotRetryDelays =
     [
@@ -40,7 +44,7 @@ public class Quote0SyncService : IHostedService
                   {
                     "type": "div",
                     "props": {
-                      "tw": "flex flex-row items-center justify-between min-w-0 h-[16px]",
+                      "tw": "flex flex-row items-center min-w-0 h-[16px] gap-[6px]",
                       "children": [
                         {
                           "type": "div",
@@ -53,9 +57,17 @@ public class Quote0SyncService : IHostedService
                         {
                           "type": "div",
                           "props": {
-                            "tw": "text-10-chillduansans min-w-0 flex-1",
-                            "style": { "fontSize": "10px", "lineHeight": "13px", "lineClamp": 1, "overflow": "hidden", "textOverflow": "ellipsis", "whiteSpace": "nowrap", "textAlign": "center" },
+                            "tw": "text-10-chillduansans shrink-0",
+                            "style": { "fontSize": "10px", "lineHeight": "13px", "whiteSpace": "nowrap" },
                             "children": "{{get inputData \"weather\" default=\"\"}}"
+                          }
+                        },
+                        {
+                          "type": "div",
+                          "props": {
+                            "tw": "text-9-chillduansans font-semibold flex-1 min-w-0",
+                            "style": { "fontSize": "9px", "lineHeight": "12px", "lineClamp": 1, "overflow": "hidden", "textOverflow": "ellipsis", "whiteSpace": "nowrap" },
+                            "children": "{{get inputData \"alertText\" default=\"\"}}"
                           }
                         },
                         {
@@ -91,8 +103,8 @@ public class Quote0SyncService : IHostedService
                               {
                                 "type": "div",
                                 "props": {
-                                  "tw": "text-26-chillduansans font-bold min-w-0",
-                                  "style": { "fontSize": "26px", "fontWeight": 700, "lineHeight": "28px", "lineClamp": 1, "overflow": "hidden", "textOverflow": "ellipsis", "whiteSpace": "nowrap" },
+                                  "tw": "text-24-chillduansans font-bold min-w-0",
+                                  "style": { "fontSize": "24px", "fontWeight": 700, "lineHeight": "26px", "lineClamp": 1, "overflow": "hidden", "textOverflow": "ellipsis", "whiteSpace": "nowrap" },
                                   "children": "{{get inputData \"title\" default=\"-\"}}"
                                 }
                               },
@@ -114,9 +126,25 @@ public class Quote0SyncService : IHostedService
                               {
                                 "type": "div",
                                 "props": {
-                                  "tw": "text-10-chillduansans",
-                                  "style": { "fontSize": "10px", "lineHeight": "12px", "whiteSpace": "nowrap" },
-                                  "children": "{{get inputData \"remaining\" default=\"\"}}"
+                                  "tw": "flex flex-row items-center justify-between min-w-0",
+                                  "children": [
+                                    {
+                                      "type": "div",
+                                      "props": {
+                                        "tw": "text-10-chillduansans min-w-0",
+                                        "style": { "fontSize": "10px", "lineHeight": "12px", "whiteSpace": "nowrap" },
+                                        "children": "{{get inputData \"remaining\" default=\"\"}}"
+                                      }
+                                    },
+                                    {
+                                      "type": "div",
+                                      "props": {
+                                        "tw": "text-10-chillduansans shrink-0",
+                                        "style": { "fontSize": "10px", "lineHeight": "12px", "whiteSpace": "nowrap", "textAlign": "right" },
+                                        "children": "{{get inputData \"courseTime\" default=\"\"}}"
+                                      }
+                                    }
+                                  ]
                                 }
                               }
                             ]
@@ -175,7 +203,7 @@ public class Quote0SyncService : IHostedService
                           "type": "div",
                           "props": {
                             "tw": "text-10-chillduansans min-w-0",
-                            "style": { "fontSize": "10px", "lineHeight": "13px", "whiteSpace": "normal", "wordBreak": "break-word" },
+                            "style": { "fontSize": "10px", "lineHeight": "13px", "whiteSpace": "normal", "wordBreak": "break-word", "lineClamp": 2, "overflow": "hidden" },
                             "children": "{{get inputData \"upcomingText\" default=\"\"}}"
                           }
                         }
@@ -185,8 +213,8 @@ public class Quote0SyncService : IHostedService
                   {
                     "type": "div",
                     "props": {
-                      "tw": "text-10-chillduansans min-w-0 h-[13px] border-t border-black",
-                      "style": { "fontSize": "10px", "lineHeight": "12px", "lineClamp": 1, "overflow": "hidden", "textOverflow": "ellipsis", "whiteSpace": "nowrap" },
+                      "tw": "text-9-chillduansans min-w-0 border-t border-black",
+                      "style": { "fontSize": "9px", "lineHeight": "12px", "lineClamp": 1, "overflow": "hidden", "textOverflow": "ellipsis", "whiteSpace": "nowrap", "paddingTop": "2px" },
                       "children": "{{get inputData \"footer\" default=\"暂无近期广播排期\"}}"
                     }
                   }
@@ -232,6 +260,8 @@ public class Quote0SyncService : IHostedService
     private string? _dotCountdownStateKey;
     private int _dotCountdownLastDisplayedMinutes;
     private string _dotCountdownText = "";
+    private DateTime _lastVoiceHubSegmentSwitchAt = DateTime.MinValue;
+    private int _voiceHubSegmentIndex;
 
     public Quote0SyncService(
         ILessonsService lessonsService,
@@ -434,6 +464,8 @@ public class Quote0SyncService : IHostedService
             }
         }
 
+        var firstAlert = weatherInfo?.Alerts?.FirstOrDefault();
+
         return new SyncPayload
         {
             Date = DateTime.Today.ToString("yyyy-MM-dd"),
@@ -443,7 +475,7 @@ public class Quote0SyncService : IHostedService
                 Text = weatherInfo != null ? WeatherService.GetWeatherTextByCode(weatherInfo.Current.Weather) : "未知",
                 Temperature = weatherInfo?.Current?.Temperature?.Value ?? "0",
                 Rain = rainMessage,
-                Warning = weatherInfo?.Alerts?.FirstOrDefault()?.Title ?? "",
+                Warning = firstAlert?.Title ?? "",
                 Alerts = weatherInfo?.Alerts?.Select(a => new AlertPayload
                 {
                     Type = a.Type,
@@ -489,7 +521,8 @@ public class Quote0SyncService : IHostedService
                 return "";
 
             var targetDate = futureDates.OrderBy(x => x).First();
-            var result = $"广播站排期 {targetDate}: ";
+            // 日期去掉年份（如 2026-09-01 → 09-01），节省横向空间。
+            var result = $"广播站排期 {targetDate[5..]}: ";
             var index = 1;
             var targetItems = document.RootElement.EnumerateArray()
                 .Where(item => item.TryGetProperty("playDate", out var date) &&
@@ -502,11 +535,7 @@ public class Quote0SyncService : IHostedService
                 var song = item.GetProperty("song");
                 var title = song.TryGetProperty("title", out var titleElement) ? titleElement.GetString() ?? "" : "";
                 var artist = song.TryGetProperty("artist", out var artistElement) ? artistElement.GetString() ?? "" : "";
-                var requester = song.TryGetProperty("requester", out var requesterElement) ? requesterElement.GetString() ?? "" : "";
-                result += $"#{index} {title}-{artist}";
-                if (!string.IsNullOrEmpty(requester))
-                    result += $"-{requester}";
-                result += "  ";
+                result += $"#{index} {title}-{artist} · ";
                 index++;
             }
 
@@ -737,6 +766,7 @@ public class Quote0SyncService : IHostedService
         var state = "";
         var title = "";
         var remaining = "";
+        var courseTime = "";
         var referenceIndex = 0;
         var useTomorrowRows = false;
         var remainingCount = 0;
@@ -762,6 +792,7 @@ public class Quote0SyncService : IHostedService
                 "即将下课");
             referenceIndex = currentIndex;
             remainingCount = today.Count - currentIndex;
+            courseTime = $"{current.Start:hh\\:mm} - {current.End:hh\\:mm}";
             var totalMinutes = (current.End - current.Start).TotalMinutes;
             var elapsedMinutes = (currentTime - current.Start).TotalMinutes;
             progressPercent = totalMinutes > 0
@@ -782,6 +813,7 @@ public class Quote0SyncService : IHostedService
                 "即将上课");
             referenceIndex = nextIndex;
             remainingCount = today.Count - nextIndex;
+            courseTime = $"{upcoming.Start:hh\\:mm} - {upcoming.End:hh\\:mm}";
             countdownStateKey = $"{payload.Date}:{state}:{nextIndex}:{upcoming.Start}";
         }
         else
@@ -814,27 +846,54 @@ public class Quote0SyncService : IHostedService
             upcomingText = string.Join(" · ", parts);
         }
 
-        var weatherDetail = !string.IsNullOrWhiteSpace(payload.Weather.Warning)
-            ? payload.Weather.Warning
-            : payload.Weather.Rain;
+        // 天气只显示天气状况与温度；预警/降水单独展示。
         var weather = $"{payload.Weather.Text} {payload.Weather.Temperature}℃";
-        if (!string.IsNullOrWhiteSpace(weatherDetail))
-            weather += $" · {weatherDetail}";
+
+        // 预警优先于降水提示。预警去掉发布地点，只保留预警内容。
+        string alertText;
+        if (!string.IsNullOrWhiteSpace(payload.Weather.Warning))
+            alertText = StripAlertLocation(payload.Weather.Warning);
+        else if (!string.IsNullOrWhiteSpace(payload.Weather.Rain))
+            alertText = payload.Weather.Rain;
+        else
+            alertText = "";
+
+        // 广播排期分段轮播：每段适配单行宽度，按轮播间隔依次展示，展示完回到第一段。
+        var footer = "暂无近期广播排期";
+        if (!string.IsNullOrWhiteSpace(payload.VoiceHub))
+        {
+            var segments = SplitVoiceHubText(payload.VoiceHub, VoiceHubMaxSegmentWidth);
+            if (segments.Count > 1)
+            {
+                if (_lastVoiceHubSegmentSwitchAt == DateTime.MinValue)
+                {
+                    _lastVoiceHubSegmentSwitchAt = now;
+                }
+                else if (now - _lastVoiceHubSegmentSwitchAt >= VoiceHubRotateInterval)
+                {
+                    _voiceHubSegmentIndex = (_voiceHubSegmentIndex + 1) % segments.Count;
+                    _lastVoiceHubSegmentSwitchAt = now;
+                }
+            }
+            footer = segments[Math.Min(_voiceHubSegmentIndex, segments.Count - 1)];
+        }
 
         return new DotCanvasData
         {
             StateKey = countdownStateKey,
             DateLine = $"{now:M月d日} {GetChineseWeekday(now.DayOfWeek)}",
-            Weather = TruncateText(weather, 12),
+            Weather = weather,
+            AlertText = alertText,
             CurrentTime = now.ToString("HH:mm"),
             State = state,
             Title = TruncateText(title, 8),
             Remaining = remaining,
+            CourseTime = courseTime,
             RemainingCount = remainingCount,
             ProgressPercent = progressPercent,
             ScheduleTitle = useTomorrowRows ? "明日课表" : "今日课表",
             UpcomingText = upcomingText,
-            Footer = TruncateText(string.IsNullOrWhiteSpace(payload.VoiceHub) ? "暂无近期广播排期" : payload.VoiceHub, 52)
+            Footer = footer
         };
     }
 
@@ -893,6 +952,54 @@ public class Quote0SyncService : IHostedService
 
     private static string TruncateText(string text, int maxLength) =>
         text.Length <= maxLength ? text : $"{text[..Math.Max(0, maxLength - 1)]}…";
+
+    /// <summary>
+    /// 去掉气象预警标题中的发布地点前缀。
+    /// </summary>
+    private static string StripAlertLocation(string title)
+    {
+        var stripped = Regex.Replace(title, "^.*?发布", "");
+        return string.IsNullOrWhiteSpace(stripped) ? title : stripped.Trim();
+    }
+
+    /// <summary>
+    /// 将广播排期文本按歌曲分隔符分段，每段不超过指定像素宽度，用于单行轮播展示。
+    /// </summary>
+    private static List<string> SplitVoiceHubText(string text, int maxWidth)
+    {
+        var parts = text.Split(" · ");
+        var segments = new List<string>();
+        var current = "";
+        foreach (var part in parts)
+        {
+            var candidate = current.Length == 0 ? part : $"{current} · {part}";
+            if (EstimateTextWidth(candidate) > maxWidth && current.Length > 0)
+            {
+                segments.Add(current);
+                current = part;
+            }
+            else
+            {
+                current = candidate;
+            }
+        }
+        if (current.Length > 0)
+            segments.Add(current);
+        return segments;
+    }
+
+    /// <summary>
+    /// 估算文本在 9px 字体下的像素宽度：CJK 字符按 9px，ASCII 字符按 5px。
+    /// </summary>
+    private static int EstimateTextWidth(string text)
+    {
+        var width = 0;
+        foreach (var c in text)
+        {
+            width += c < 128 ? 5 : 9;
+        }
+        return width;
+    }
 
     private static string GetChineseWeekday(DayOfWeek day) => day switch
     {
@@ -1036,10 +1143,12 @@ public class Quote0SyncService : IHostedService
         [JsonIgnore] public string StateKey { get; init; } = "";
         [JsonPropertyName("dateLine")] public string DateLine { get; init; } = "";
         [JsonPropertyName("weather")] public string Weather { get; init; } = "";
+        [JsonPropertyName("alertText")] public string AlertText { get; init; } = "";
         [JsonPropertyName("currentTime")] public string CurrentTime { get; init; } = "";
         [JsonPropertyName("state")] public string State { get; init; } = "";
         [JsonPropertyName("title")] public string Title { get; init; } = "";
         [JsonPropertyName("remaining")] public string Remaining { get; init; } = "";
+        [JsonPropertyName("courseTime")] public string CourseTime { get; init; } = "";
         [JsonPropertyName("remainingCount")] public int RemainingCount { get; init; }
         [JsonPropertyName("progressPercent")] public int ProgressPercent { get; init; }
         [JsonPropertyName("scheduleTitle")] public string ScheduleTitle { get; init; } = "";
