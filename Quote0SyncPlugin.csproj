@@ -22,30 +22,12 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- 开发期引用本地核心库以使用最新 API；
-         待相关 API 随 ClassIsland 发布后，请切换为 ClassIsland.PluginSdk 包引用。
-         所有引用均不复制到输出目录，避免与主程序已加载的程序集冲突。 -->
-    <ProjectReference Include="..\ClassIsland.Core\ClassIsland.Core.csproj"
-                      Private="false"
-                      ExcludeAssets="runtime" />
-    <ProjectReference Include="..\ClassIsland.Shared\ClassIsland.Shared.csproj"
-                      Private="false"
-                      ExcludeAssets="runtime" />
-    <ProjectReference Include="..\ClassIsland.Shared.IPC\ClassIsland.Shared.IPC.csproj"
-                      Private="false"
-                      ExcludeAssets="runtime" />
-    <ProjectReference Include="..\ClassIsland.Platforms.Abstractions\ClassIsland.Platforms.Abstractions.csproj"
-                      Private="false"
-                      ExcludeAssets="runtime" />
+    <!-- LastWeatherInfo 尚未随已发布包提供，需高于 2.1.1.1 的正式版；
+         排除 runtime/native 资产，避免与主程序已加载的程序集冲突。 -->
+    <PackageReference Include="ClassIsland.PluginSdk" Version="(2.1.1.1,)">
+      <ExcludeAssets>runtime; native</ExcludeAssets>
+    </PackageReference>
   </ItemGroup>
-
-  <Import Project="..\ClassIsland.PluginSdk\ClassIsland.PluginSdk.targets" />
-
-  <!-- 本地项目引用开发模式下，Avalonia 等传递依赖的 native 资产会进入输出目录。
-       运行时由主程序提供这些库，这里在打包 cipx 前清理，保持插件输出干净。 -->
-  <Target Name="CleanPluginRuntimeAssets" BeforeTargets="CreateCipx">
-    <RemoveDir Directories="$(OutputPath)runtimes" Condition="Exists('$(OutputPath)runtimes')" />
-  </Target>
 
   <ItemGroup>
     <None Update="icon.png">

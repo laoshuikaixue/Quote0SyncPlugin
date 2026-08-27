@@ -24,6 +24,12 @@
                     <ToggleSwitch IsChecked="{Binding IsEnabled, Mode=TwoWay}" />
                 </controls:SettingsExpander.Footer>
 
+                <controls:SettingsExpanderItem Content="显示 VoiceHub 广播站排期"
+                                               Description="关闭后隐藏底部广播排期，并把空间留给课表等其他内容。">
+                    <controls:SettingsExpanderItem.Footer>
+                        <ToggleSwitch IsChecked="{Binding ShowVoiceHubSchedule, Mode=TwoWay}" />
+                    </controls:SettingsExpanderItem.Footer>
+                </controls:SettingsExpanderItem>
                 <controls:SettingsExpanderItem Content="Dot API Key"
                                                Description="在 Dot App 的“更多 → API Keys”中创建。密钥会明文保存在本机插件配置目录。">
                     <controls:SettingsExpanderItem.Footer>

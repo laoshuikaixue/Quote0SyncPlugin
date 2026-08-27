@@ -9,6 +9,7 @@ namespace Quote0SyncPlugin.Models;
 public class Quote0SyncSettings : INotifyPropertyChanged
 {
     private bool _isEnabled;
+    private bool _showVoiceHubSchedule = true;
     private string _apiKey = "";
     private string _deviceId = "";
     private string _taskKey = "";
@@ -47,6 +48,15 @@ public class Quote0SyncSettings : INotifyPropertyChanged
     {
         get => _taskKey;
         set { var normalized = value.Trim(); if (_taskKey == normalized) return; _taskKey = normalized; OnPropertyChanged(); }
+    }
+
+    /// <summary>
+    /// 是否显示 VoiceHub 广播站排期。
+    /// </summary>
+    public bool ShowVoiceHubSchedule
+    {
+        get => _showVoiceHubSchedule;
+        set { if (_showVoiceHubSchedule == value) return; _showVoiceHubSchedule = value; OnPropertyChanged(); }
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;

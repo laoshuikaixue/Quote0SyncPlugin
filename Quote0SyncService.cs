@@ -5,7 +5,9 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using System.ComponentModel;
 using ClassIsland.Core.Abstractions.Services;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -20,6 +22,10 @@ public class Quote0SyncService : IHostedService
 {
     private const string DotBaseUrl = "https://dot.mindreset.tech";
     private const string DotTaskAlias = "ClassIsland Schedule";
+    private static readonly TimeSpan PayloadRefreshInterval = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan StartupSyncRetryInterval = TimeSpan.FromSeconds(2);
+    private const int SchedulePageSize = 4;
+    private const int ShortBreakMaxMinutes = 15;
     // 广播排期分段轮播：每段最大像素宽度（适配单行）与轮播间隔。
     private const int VoiceHubMaxSegmentWidth = 270;
     private static readonly TimeSpan VoiceHubRotateInterval = TimeSpan.FromMinutes(5);
@@ -31,7 +37,7 @@ public class Quote0SyncService : IHostedService
         TimeSpan.FromMinutes(5),
         TimeSpan.FromMinutes(15)
     ];
-    private static readonly int[] DotCountdownThresholds = [30, 15, 5, 1];
+    private static readonly int[] DotCountdownThresholds = [30, 20, 10, 5, 1];
 
     private static readonly JsonElement DotCanvasWindowData = JsonDocument.Parse("""
         {
@@ -225,12 +231,28 @@ public class Quote0SyncService : IHostedService
         }
         """).RootElement.Clone();
 
+    private static readonly JsonElement DotCanvasWindowDataWithoutFooter =
+        CreateDotCanvasWindowDataWithoutFooter();
+
     private static readonly JsonElement DotCanvasLayoutFull = JsonDocument.Parse("""
         {
           "tw": "p-0 bg-white",
           "style": { "padding": 0, "backgroundColor": "#FFFFFF" }
         }
         """).RootElement.Clone();
+
+    private static JsonElement CreateDotCanvasWindowDataWithoutFooter()
+    {
+        var root = JsonNode.Parse(DotCanvasWindowData.GetRawText())
+            ?? throw new InvalidOperationException("Dot Canvas 布局解析失败。");
+        var children = root["default"]?[0]?["props"]?["children"]?.AsArray()
+            ?? throw new InvalidOperationException("Dot Canvas 根节点缺少 children。");
+        if (children.Count == 0)
+            throw new InvalidOperationException("Dot Canvas 根节点没有可移除的 footer。");
+
+        children.RemoveAt(children.Count - 1);
+        return JsonSerializer.SerializeToElement(root);
+    }
 
     private ILessonsService LessonsService { get; }
     private IProfileService ProfileService { get; }
@@ -260,8 +282,17 @@ public class Quote0SyncService : IHostedService
     private string? _dotCountdownStateKey;
     private int _dotCountdownLastDisplayedMinutes;
     private string _dotCountdownText = "";
+    private DateTimeOffset _lastPayloadRefreshTime = DateTimeOffset.MinValue;
+    private int _schedulePageIndex;
+    private DateTime _schedulePageSwitchAt = DateTime.MinValue;
+    private string _cachedVoiceHubText = "";
+    private DateTimeOffset _lastVoiceHubFetchTime = DateTimeOffset.MinValue;
     private DateTime _lastVoiceHubSegmentSwitchAt = DateTime.MinValue;
     private int _voiceHubSegmentIndex;
+    private DateTime _weatherAlertSwitchAt = DateTime.MinValue;
+    private int _weatherAlertPageIndex;
+    private CancellationTokenSource? _startupSyncCancellationTokenSource;
+    private Task? _startupSyncTask;
 
     public Quote0SyncService(
         ILessonsService lessonsService,
@@ -280,15 +311,64 @@ public class Quote0SyncService : IHostedService
     public Task StartAsync(CancellationToken cancellationToken)
     {
         LessonsService.PostMainTimerTicked += LessonsServiceOnPostMainTimerTicked;
+        LessonsService.PropertyChanged += LessonsServiceOnPropertyChanged;
         Settings.PropertyChanged += SettingsOnPropertyChanged;
+        _ = RefreshLatestPayloadAndEvaluateAsync(DateTime.Now);
+        _startupSyncCancellationTokenSource = new CancellationTokenSource();
+        _startupSyncTask = RunStartupSyncAsync(_startupSyncCancellationTokenSource.Token);
         return Task.CompletedTask;
     }
 
     public Task StopAsync(CancellationToken cancellationToken)
     {
         LessonsService.PostMainTimerTicked -= LessonsServiceOnPostMainTimerTicked;
+        LessonsService.PropertyChanged -= LessonsServiceOnPropertyChanged;
         Settings.PropertyChanged -= SettingsOnPropertyChanged;
+        _startupSyncCancellationTokenSource?.Cancel();
         return Task.CompletedTask;
+    }
+
+    private async Task RunStartupSyncAsync(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            if (Settings.IsEnabled && ValidateDotConfiguration() == null)
+            {
+                try
+                {
+                    var payload = await GetSyncPayloadAsync(forceRefresh: true);
+                    if (payload != null)
+                    {
+                        QueueDotSync(payload, immediate: true);
+                        Logger.LogInformation("Quote/0 启动自动同步已完成。");
+                        return;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.LogWarning(ex, "Quote/0 启动自动同步失败，将等待课表加载后重试。");
+                }
+            }
+
+            try
+            {
+                await Task.Delay(StartupSyncRetryInterval, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+        }
+    }
+
+    private void LessonsServiceOnPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (!Settings.IsEnabled || !string.IsNullOrEmpty(e.PropertyName) &&
+            e.PropertyName is not (nameof(ILessonsService.CurrentClassPlan) or
+                nameof(ILessonsService.IsClassPlanEnabled) or nameof(ILessonsService.IsClassPlanLoaded)))
+            return;
+
+        _ = RefreshDotAfterScheduleChangeAsync();
     }
 
     private void LessonsServiceOnPostMainTimerTicked(object? sender, EventArgs e)
@@ -297,7 +377,44 @@ public class Quote0SyncService : IHostedService
             return;
 
         var now = DateTime.Now;
-        EvaluateDotFromLatestSnapshot(now);
+        _ = RefreshLatestPayloadAndEvaluateAsync(now);
+    }
+
+    private async Task RefreshLatestPayloadAndEvaluateAsync(DateTime now)
+    {
+        var timestamp = new DateTimeOffset(now);
+        if (timestamp - _lastDotEvaluationTime < TimeSpan.FromMilliseconds(250))
+            return;
+
+        _lastDotEvaluationTime = timestamp;
+        if (timestamp - _lastPayloadRefreshTime >= PayloadRefreshInterval)
+        {
+            _lastPayloadRefreshTime = timestamp;
+            try
+            {
+                await GetSyncPayloadAsync(forceRefresh: true);
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(ex, "刷新 Quote/0 课表快照失败。");
+            }
+        }
+
+        EvaluateDotFromLatestSnapshot(DateTime.Now);
+    }
+
+    private async Task RefreshDotAfterScheduleChangeAsync()
+    {
+        try
+        {
+            var payload = await GetSyncPayloadAsync(forceRefresh: true);
+            if (payload != null)
+                QueueDotSync(payload, immediate: true);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "课表变化后刷新 Quote/0 快照失败。");
+        }
     }
 
     private void SettingsOnPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
@@ -466,6 +583,13 @@ public class Quote0SyncService : IHostedService
 
         var firstAlert = weatherInfo?.Alerts?.FirstOrDefault();
 
+        var nowOffset = DateTimeOffset.Now;
+        if (Settings.ShowVoiceHubSchedule && nowOffset - _lastVoiceHubFetchTime >= VoiceHubRotateInterval)
+        {
+            _cachedVoiceHubText = await GetVoiceHubTextAsync();
+            _lastVoiceHubFetchTime = nowOffset;
+        }
+
         return new SyncPayload
         {
             Date = DateTime.Today.ToString("yyyy-MM-dd"),
@@ -485,7 +609,7 @@ public class Quote0SyncService : IHostedService
             },
             Courses = courses,
             TomorrowCourses = tomorrowCourses,
-            VoiceHub = await GetVoiceHubTextAsync()
+            VoiceHub = Settings.ShowVoiceHubSchedule ? _cachedVoiceHubText : ""
         };
     }
 
@@ -652,7 +776,9 @@ public class Quote0SyncService : IHostedService
                 ["refreshNow"] = true,
                 ["taskAlias"] = DotTaskAlias,
                 ["data"] = request.Data,
-                ["windowData"] = DotCanvasWindowData,
+                ["windowData"] = Settings.ShowVoiceHubSchedule
+                    ? DotCanvasWindowData
+                    : DotCanvasWindowDataWithoutFooter,
                 ["layoutFull"] = DotCanvasLayoutFull,
                 ["border"] = 0
             };
@@ -789,15 +915,16 @@ public class Quote0SyncService : IHostedService
                 $"{payload.Date}:class:{currentIndex}:{current.Start}",
                 MinutesUntil(current.End, currentTime),
                 "剩余 ",
-                "即将下课");
+                "即将下课",
+                out var countdownMinutes);
             referenceIndex = currentIndex;
             remainingCount = today.Count - currentIndex;
             courseTime = $"{current.Start:hh\\:mm} - {current.End:hh\\:mm}";
-            var totalMinutes = (current.End - current.Start).TotalMinutes;
-            var elapsedMinutes = (currentTime - current.Start).TotalMinutes;
-            // 进度按 10% 粒度取整，避免每分钟变化触发墨水屏刷新。
+            var totalMinutes = Math.Max(1, (int)Math.Ceiling((current.End - current.Start).TotalMinutes));
+            var elapsedMinutes = Math.Clamp(totalMinutes - countdownMinutes, 0, totalMinutes);
+            // 进度直接由当前展示的倒计时推算，确保两者只在同一次 Canvas 更新中变化。
             progressPercent = totalMinutes > 0
-                ? Math.Clamp((int)Math.Round(elapsedMinutes / totalMinutes * 100), 0, 100) / 10 * 10
+                ? Math.Clamp(elapsedMinutes * 100 / totalMinutes / 10 * 10, 0, 100)
                 : 0;
             countdownStateKey = $"{payload.Date}:class:{currentIndex}:{current.Start}";
         }
@@ -807,11 +934,18 @@ public class Quote0SyncService : IHostedService
             var isBeforeSchool = nextIndex == 0;
             state = isBeforeSchool ? "未上课" : "课间";
             title = upcoming.Name;
+            var previousCourse = nextIndex > 0 ? today[nextIndex - 1] : null;
+            var breakDuration = previousCourse != null
+                ? (upcoming.Start - previousCourse.End).TotalMinutes
+                : double.MaxValue;
+            var isShortBreak = !isBeforeSchool && breakDuration > 0 && breakDuration <= ShortBreakMaxMinutes;
             remaining = GetAdaptiveCountdownText(
                 $"{payload.Date}:{state}:{nextIndex}:{upcoming.Start}",
                 MinutesUntil(upcoming.Start, currentTime),
                 "距上课 ",
-                "即将上课");
+                "即将上课",
+                out _,
+                isShortBreak);
             referenceIndex = nextIndex;
             remainingCount = today.Count - nextIndex;
             courseTime = $"{upcoming.Start:hh\\:mm} - {upcoming.End:hh\\:mm}";
@@ -844,39 +978,52 @@ public class Quote0SyncService : IHostedService
                 var marker = i == currentIndex ? "● " : "";
                 parts.Add($"{marker}{today[i].Start:hh\\:mm} {TruncateText(today[i].Name, 8)}");
             }
-            upcomingText = string.Join(" · ", parts);
+            upcomingText = BuildSchedulePageText(parts, now);
         }
 
-        // 天气只显示天气状况与温度；预警/降水单独展示。
+        // 天气只显示天气状况与温度；多个预警轮播展示，避免单行区域被拼接内容截断。
         var weather = $"{payload.Weather.Text} {payload.Weather.Temperature}℃";
 
-        // 预警优先于降水提示。预警去掉发布地点，只保留预警内容。
+        // 预警优先于降水提示。去掉发布地点并去重，只保留有效预警内容。
         string alertText;
-        if (!string.IsNullOrWhiteSpace(payload.Weather.Warning))
-            alertText = StripAlertLocation(payload.Weather.Warning);
+        var alerts = payload.Weather.Alerts
+            .Select(alert => StripAlertLocation(alert.Title))
+            .Where(alertTitle => !string.IsNullOrWhiteSpace(alertTitle))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        if (alerts.Count > 0)
+        {
+            var alertIndex = GetRotatingIndex(
+                alerts.Count,
+                _weatherAlertSwitchAt,
+                _weatherAlertPageIndex,
+                now,
+                out var weatherAlertSwitchAt);
+            _weatherAlertPageIndex = alertIndex;
+            _weatherAlertSwitchAt = weatherAlertSwitchAt;
+            var alertTitle = alerts[alertIndex];
+            alertText = alerts.Count > 1 ? $"[{alertIndex + 1}/{alerts.Count}] {alertTitle}" : alertTitle;
+        }
         else if (!string.IsNullOrWhiteSpace(payload.Weather.Rain))
             alertText = payload.Weather.Rain;
         else
             alertText = "";
 
-        // 广播排期分段轮播：每段适配单行宽度，按轮播间隔依次展示，展示完回到第一段。
-        var footer = "暂无近期广播排期";
+        // 广播排期分段轮播：每段适配单行宽度，按轮播间隔依次展示；关闭后由 Canvas 条件渲染移除整行。
+        var footer = Settings.ShowVoiceHubSchedule ? "暂无近期广播排期" : "";
         if (!string.IsNullOrWhiteSpace(payload.VoiceHub))
         {
             var segments = SplitVoiceHubText(payload.VoiceHub, VoiceHubMaxSegmentWidth);
-            if (segments.Count > 1)
-            {
-                if (_lastVoiceHubSegmentSwitchAt == DateTime.MinValue)
-                {
-                    _lastVoiceHubSegmentSwitchAt = now;
-                }
-                else if (now - _lastVoiceHubSegmentSwitchAt >= VoiceHubRotateInterval)
-                {
-                    _voiceHubSegmentIndex = (_voiceHubSegmentIndex + 1) % segments.Count;
-                    _lastVoiceHubSegmentSwitchAt = now;
-                }
-            }
-            footer = segments[Math.Min(_voiceHubSegmentIndex, segments.Count - 1)];
+            var segmentIndex = GetRotatingIndex(
+                segments.Count,
+                _lastVoiceHubSegmentSwitchAt,
+                _voiceHubSegmentIndex,
+                now,
+                out var voiceHubSegmentSwitchAt);
+            _voiceHubSegmentIndex = segmentIndex;
+            _lastVoiceHubSegmentSwitchAt = voiceHubSegmentSwitchAt;
+            footer = segments[segmentIndex];
         }
 
         return new DotCanvasData
@@ -899,7 +1046,13 @@ public class Quote0SyncService : IHostedService
         };
     }
 
-    private string GetAdaptiveCountdownText(string stateKey, int remainingMinutes, string prefix, string finalText)
+    private string GetAdaptiveCountdownText(
+        string stateKey,
+        int remainingMinutes,
+        string prefix,
+        string finalText,
+        out int displayedMinutes,
+        bool updateEveryMinute = false)
     {
         lock (_dotStateLock)
         {
@@ -908,20 +1061,79 @@ public class Quote0SyncService : IHostedService
                 _dotCountdownStateKey = stateKey;
                 _dotCountdownLastDisplayedMinutes = remainingMinutes;
                 _dotCountdownText = remainingMinutes <= 1 ? finalText : $"{prefix}{remainingMinutes} 分钟";
+                displayedMinutes = remainingMinutes <= 1 ? 0 : remainingMinutes;
                 return _dotCountdownText;
             }
 
-            var crossedThreshold = DotCountdownThresholds
-                .Where(threshold => remainingMinutes <= threshold && _dotCountdownLastDisplayedMinutes > threshold)
-                .LastOrDefault();
+            var crossedThreshold = 0;
+            if (updateEveryMinute)
+            {
+                if (remainingMinutes < _dotCountdownLastDisplayedMinutes)
+                    crossedThreshold = remainingMinutes;
+            }
+            else
+            {
+                crossedThreshold = DotCountdownThresholds
+                    .Where(threshold => remainingMinutes <= threshold && _dotCountdownLastDisplayedMinutes > threshold)
+                    .LastOrDefault();
+            }
+
             if (crossedThreshold > 0)
             {
                 _dotCountdownLastDisplayedMinutes = crossedThreshold;
                 _dotCountdownText = crossedThreshold == 1 ? finalText : $"{prefix}{crossedThreshold} 分钟";
             }
 
+            displayedMinutes = _dotCountdownLastDisplayedMinutes <= 1 ? 0 : _dotCountdownLastDisplayedMinutes;
             return _dotCountdownText;
         }
+    }
+
+    private string BuildSchedulePageText(List<string> items, DateTime now)
+    {
+        var pages = new List<string>();
+        for (var index = 0; index < items.Count; index += SchedulePageSize)
+        {
+            pages.Add(string.Join(" · ", items.Skip(index).Take(SchedulePageSize)));
+        }
+
+        if (pages.Count <= 1)
+            return pages.FirstOrDefault() ?? "";
+
+        if (_schedulePageSwitchAt == DateTime.MinValue)
+        {
+            _schedulePageSwitchAt = now;
+        }
+        else if (now - _schedulePageSwitchAt >= VoiceHubRotateInterval)
+        {
+            _schedulePageIndex = (_schedulePageIndex + 1) % pages.Count;
+            _schedulePageSwitchAt = now;
+        }
+
+        _schedulePageIndex %= pages.Count;
+        return pages[_schedulePageIndex];
+    }
+
+    private static int GetRotatingIndex(
+        int count,
+        DateTime lastSwitchAt,
+        int currentIndex,
+        DateTime now,
+        out DateTime nextSwitchAt)
+    {
+        nextSwitchAt = lastSwitchAt;
+        if (lastSwitchAt == DateTime.MinValue)
+        {
+            nextSwitchAt = now;
+            return 0;
+        }
+
+        var normalizedIndex = Math.Min(currentIndex, count - 1);
+        if (count <= 1 || now - lastSwitchAt < VoiceHubRotateInterval)
+            return normalizedIndex;
+
+        nextSwitchAt = now;
+        return (normalizedIndex + 1) % count;
     }
 
     private void SetCountdownState(string stateKey)
