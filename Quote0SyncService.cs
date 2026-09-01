@@ -943,13 +943,21 @@ public class Quote0SyncService : IHostedService
         if (string.IsNullOrEmpty(remaining))
             SetCountdownState(countdownStateKey);
 
-        // 剩余课程文本（横向 · 分隔，自动换行）：列举所有未上完的课程；已放学/无课时显示提示。
+        // 剩余课程文本（横向 · 分隔，自动换行）：列举所有未上完的课程；已放学/无课时与今日课表同样分页展示明日完整课表。
         string upcomingText;
         if (useTomorrowRows)
         {
-            upcomingText = tomorrow.Count > 0
-                ? $"明日 {tomorrow[0].Start:hh\\:mm} {tomorrow[0].Name}"
-                : "明日暂无课程";
+            if (tomorrow.Count == 0)
+            {
+                upcomingText = "明日暂无课程";
+            }
+            else
+            {
+                var parts = tomorrow
+                    .Select(course => $"{course.Start:hh\\:mm} {TruncateText(course.Name, 8)}")
+                    .ToList();
+                upcomingText = BuildSchedulePageText(parts, now);
+            }
         }
         else
         {
@@ -1015,7 +1023,7 @@ public class Quote0SyncService : IHostedService
         {
             footer = BuildCourseFooterText(
                 useTomorrowRows ? tomorrow : today,
-                useTomorrowRows ? 1 : referenceIndex + 1);
+                useTomorrowRows ? 0 : referenceIndex + 1);
         }
 
         return new DotCanvasData
