@@ -19,13 +19,13 @@
             <controls:SettingsExpander Header="Quote/0 Canvas 同步"
                                        IconSource="{ci:FluentIconSource &#xE4A9;}"
                                        IsExpanded="{Binding IsEnabled, Mode=OneWay}"
-                                       Description="将当前课表、天气和广播排期推送到 Quote/0 (Dot.) 墨水屏。课程状态变化时立即刷新；倒计时仅在 30、15、5、1 分钟节点刷新，以降低耗电和残影。">
+                                       Description="将当前课表、天气和广播排期推送到 Quote/0 (Dot.) 墨水屏。课程状态变化时立即刷新；倒计时仅在 30、20、10、5、1 分钟节点刷新，以降低耗电和残影。">
                 <controls:SettingsExpander.Footer>
                     <ToggleSwitch IsChecked="{Binding IsEnabled, Mode=TwoWay}" />
                 </controls:SettingsExpander.Footer>
 
                 <controls:SettingsExpanderItem Content="显示 VoiceHub 广播站排期"
-                                               Description="关闭后隐藏底部广播排期，并把空间留给课表等其他内容。">
+                                               Description="关闭后底部一行改为显示接下来的课程。">
                     <controls:SettingsExpanderItem.Footer>
                         <ToggleSwitch IsChecked="{Binding ShowVoiceHubSchedule, Mode=TwoWay}" />
                     </controls:SettingsExpanderItem.Footer>

@@ -5,7 +5,6 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using System.ComponentModel;
 using ClassIsland.Core.Abstractions.Services;
@@ -231,28 +230,12 @@ public class Quote0SyncService : IHostedService
         }
         """).RootElement.Clone();
 
-    private static readonly JsonElement DotCanvasWindowDataWithoutFooter =
-        CreateDotCanvasWindowDataWithoutFooter();
-
     private static readonly JsonElement DotCanvasLayoutFull = JsonDocument.Parse("""
         {
           "tw": "p-0 bg-white",
           "style": { "padding": 0, "backgroundColor": "#FFFFFF" }
         }
         """).RootElement.Clone();
-
-    private static JsonElement CreateDotCanvasWindowDataWithoutFooter()
-    {
-        var root = JsonNode.Parse(DotCanvasWindowData.GetRawText())
-            ?? throw new InvalidOperationException("Dot Canvas 布局解析失败。");
-        var children = root["default"]?[0]?["props"]?["children"]?.AsArray()
-            ?? throw new InvalidOperationException("Dot Canvas 根节点缺少 children。");
-        if (children.Count == 0)
-            throw new InvalidOperationException("Dot Canvas 根节点没有可移除的 footer。");
-
-        children.RemoveAt(children.Count - 1);
-        return JsonSerializer.SerializeToElement(root);
-    }
 
     private ILessonsService LessonsService { get; }
     private IProfileService ProfileService { get; }
@@ -386,7 +369,7 @@ public class Quote0SyncService : IHostedService
         if (timestamp - _lastDotEvaluationTime < TimeSpan.FromMilliseconds(250))
             return;
 
-        _lastDotEvaluationTime = timestamp;
+        // 节流时间戳只能由 EvaluateDotFromLatestSnapshot 更新；此处提前写入会让它刚检查就返回，导致不再入队推送。
         if (timestamp - _lastPayloadRefreshTime >= PayloadRefreshInterval)
         {
             _lastPayloadRefreshTime = timestamp;
@@ -776,9 +759,7 @@ public class Quote0SyncService : IHostedService
                 ["refreshNow"] = true,
                 ["taskAlias"] = DotTaskAlias,
                 ["data"] = request.Data,
-                ["windowData"] = Settings.ShowVoiceHubSchedule
-                    ? DotCanvasWindowData
-                    : DotCanvasWindowDataWithoutFooter,
+                ["windowData"] = DotCanvasWindowData,
                 ["layoutFull"] = DotCanvasLayoutFull,
                 ["border"] = 0
             };
@@ -1010,20 +991,31 @@ public class Quote0SyncService : IHostedService
         else
             alertText = "";
 
-        // 广播排期分段轮播：每段适配单行宽度，按轮播间隔依次展示；关闭后由 Canvas 条件渲染移除整行。
-        var footer = Settings.ShowVoiceHubSchedule ? "暂无近期广播排期" : "";
-        if (!string.IsNullOrWhiteSpace(payload.VoiceHub))
+        // 广播排期分段轮播：每段适配单行宽度，按轮播间隔依次展示。
+        // 未开启广播排期时，底部一行改为展示后续课程，布局整体保持不变。
+        string footer;
+        if (Settings.ShowVoiceHubSchedule)
         {
-            var segments = SplitVoiceHubText(payload.VoiceHub, VoiceHubMaxSegmentWidth);
-            var segmentIndex = GetRotatingIndex(
-                segments.Count,
-                _lastVoiceHubSegmentSwitchAt,
-                _voiceHubSegmentIndex,
-                now,
-                out var voiceHubSegmentSwitchAt);
-            _voiceHubSegmentIndex = segmentIndex;
-            _lastVoiceHubSegmentSwitchAt = voiceHubSegmentSwitchAt;
-            footer = segments[segmentIndex];
+            footer = "暂无近期广播排期";
+            if (!string.IsNullOrWhiteSpace(payload.VoiceHub))
+            {
+                var segments = SplitVoiceHubText(payload.VoiceHub, VoiceHubMaxSegmentWidth);
+                var segmentIndex = GetRotatingIndex(
+                    segments.Count,
+                    _lastVoiceHubSegmentSwitchAt,
+                    _voiceHubSegmentIndex,
+                    now,
+                    out var voiceHubSegmentSwitchAt);
+                _voiceHubSegmentIndex = segmentIndex;
+                _lastVoiceHubSegmentSwitchAt = voiceHubSegmentSwitchAt;
+                footer = segments[segmentIndex];
+            }
+        }
+        else
+        {
+            footer = BuildCourseFooterText(
+                useTomorrowRows ? tomorrow : today,
+                useTomorrowRows ? 1 : referenceIndex + 1);
         }
 
         return new DotCanvasData
@@ -1200,6 +1192,26 @@ public class Quote0SyncService : IHostedService
         if (current.Length > 0)
             segments.Add(current);
         return segments;
+    }
+
+    /// <summary>
+    /// 未开启广播排期时底部一行展示后续课程：在单行宽度内依次追加“时间 科目”项。
+    /// </summary>
+    private static string BuildCourseFooterText(IReadOnlyList<CourseView> courses, int startIndex)
+    {
+        if (startIndex >= courses.Count)
+            return "没有更多课程了";
+
+        var footer = "接下来 ";
+        for (var i = startIndex; i < courses.Count; i++)
+        {
+            var item = $"{courses[i].Start:hh\\:mm} {TruncateText(courses[i].Name, 8)}";
+            var candidate = i == startIndex ? footer + item : $"{footer} · {item}";
+            if (EstimateTextWidth(candidate) > VoiceHubMaxSegmentWidth && i > startIndex)
+                break;
+            footer = candidate;
+        }
+        return footer;
     }
 
     /// <summary>
